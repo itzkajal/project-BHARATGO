@@ -1,0 +1,10 @@
+# Secrets and local configuration
+.env
+secrets/*.txt
+!secrets/.gitkeep
+# Dependencies/build output
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store

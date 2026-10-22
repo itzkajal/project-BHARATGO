@@ -1,0 +1,252 @@
+BHARATGO — DOCKERFILE TO IMAGE TO CONTAINER PRACTICAL
+====================================================
+
+GOAL
+----
+Deploy the BHARATGO travel planner using only Docker commands. Do not use Docker Compose.
+Flow: Dockerfile -> Docker image -> Docker container.
+The MySQL database uses the official mysql:8.4 image; it does not need a custom Dockerfile.
+
+ARCHITECTURE
+------------
+Browser :8080 -> Frontend container (React build + Nginx)
+                   | Nginx proxies /api/ over Docker network
+                   v
+              Backend container (Java 21 + Spring Boot)
+                   |
+                   v
+              MySQL container (private network, persistent volume)
+
+PREREQUISITES
+-------------
+1. Install Docker Desktop on Windows/macOS, or Docker Engine on Linux. The backend uses Java 21, included in its Docker build; no local Java or Maven installation is required.
+2. Start Docker Desktop / Docker Engine.
+3. Extract the project ZIP and open terminal in bharatgo-app directory.
+4. First build/pull needs internet.
+
+VERIFY DOCKER
+-------------
+Commands:
+  docker --version
+  docker info
+
+Expected: Docker version is printed and docker info shows server details. If it fails, start Docker Desktop/Engine.
+
+STEP 1 — BUILD APPLICATION IMAGES
+---------------------------------
+Run from the project root (bharatgo-app):
+
+  docker build -t bharatgo-backend:1.0 ./backend
+  docker build -t bharatgo-frontend:1.0 ./frontend
+  docker pull mysql:8.4
+  docker images
+
+Purpose:
+- Backend Dockerfile uses Maven with Java 21 to build the Spring Boot API, then runs it on a Java 21 JRE image.
+- Frontend Dockerfile builds React/Vite and copies built files into Nginx.
+- MySQL uses the official MySQL 8.4 image.
+
+Expected: Images named bharatgo-backend, bharatgo-frontend and mysql appear in docker images.
+If build fails, inspect the first error, verify internet, and confirm the terminal is in the project root.
+
+STEP 2 — CREATE NETWORK AND DATABASE VOLUME
+-------------------------------------------
+  docker network create bharatgo-net
+  docker volume create bharatgo-mysql-data
+  docker network ls
+  docker volume ls
+
+Purpose: The user-defined network lets containers resolve one another by name. The volume keeps MySQL data after container removal.
+
+STEP 3 — START MYSQL CONTAINER
+------------------------------
+These are demonstration passwords only. Replace with strong unique values. Never commit real passwords to Git.
+
+Linux/macOS/Git Bash command:
+
+docker run -d \
+  --name bharatgo-db \
+  --network bharatgo-net \
+  --network-alias bharatgo-db \
+  --restart unless-stopped \
+  -e MYSQL_ROOT_PASSWORD='ChangeThis_Root_Only_2026!' \
+  -e MYSQL_DATABASE='travel_planner' \
+  -e MYSQL_USER='travel_app' \
+  -e MYSQL_PASSWORD='ChangeThis_App_Only_2026!' \
+  -v bharatgo-mysql-data:/var/lib/mysql \
+  -v "$PWD/database/init/001-schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro" \
+  -v "$PWD/database/init/002-seed.sql:/docker-entrypoint-initdb.d/002-seed.sql:ro" \
+  --health-cmd='mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' \
+  --health-interval=10s --health-timeout=5s --health-retries=10 --health-start-period=30s \
+  mysql:8.4
+
+Windows PowerShell command (run from the project root):
+
+docker run -d `
+  --name bharatgo-db `
+  --network bharatgo-net `
+  --network-alias bharatgo-db `
+  --restart unless-stopped `
+  -e MYSQL_ROOT_PASSWORD='ChangeThis_Root_Only_2026!' `
+  -e MYSQL_DATABASE='travel_planner' `
+  -e MYSQL_USER='travel_app' `
+  -e MYSQL_PASSWORD='ChangeThis_App_Only_2026!' `
+  -v bharatgo-mysql-data:/var/lib/mysql `
+  -v "${PWD}/database/init/001-schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro" `
+  -v "${PWD}/database/init/002-seed.sql:/docker-entrypoint-initdb.d/002-seed.sql:ro" `
+  --health-cmd='mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent' `
+  --health-interval=10s --health-timeout=5s --health-retries=10 --health-start-period=30s `
+  mysql:8.4
+
+Wait and verify:
+  docker ps
+  docker logs bharatgo-db
+
+Expected: Container status eventually becomes (healthy). First startup can take a little time. The SQL scripts initialize a fresh database only; they do not run again when the volume already contains data.
+
+STEP 4 — START BACKEND CONTAINER
+--------------------------------
+Run after MySQL is healthy. Linux/macOS/Git Bash:
+
+docker run -d \
+  --name bharatgo-backend \
+  --network bharatgo-net \
+  --restart unless-stopped \
+  -e SERVER_PORT=8080 \
+  -e DB_HOST=bharatgo-db \
+  -e DB_PORT=3306 \
+  -e DB_NAME=travel_planner \
+  -e DB_USER=travel_app \
+  -e DB_PASSWORD='ChangeThis_App_Only_2026!' \
+  bharatgo-backend:1.0
+
+Windows PowerShell: use the same options, replacing each line-ending backslash with a backtick, or paste the command as one line.
+
+Verify:
+  docker logs bharatgo-backend
+  docker inspect --format='{{.State.Status}}' bharatgo-backend
+
+Expected: Log says the API is started on port 8080; container health should become healthy. Backend is not published to the host; it is reachable by the frontend over bharatgo-net.
+
+STEP 5 — START FRONTEND CONTAINER
+---------------------------------
+Linux/macOS/Git Bash:
+  docker run -d \
+    --name bharatgo-frontend \
+    --network bharatgo-net \
+    --publish 8080:80 \
+    --restart unless-stopped \
+    bharatgo-frontend:1.0
+
+PowerShell: docker run -d --name bharatgo-frontend --network bharatgo-net --publish 8080:80 --restart unless-stopped bharatgo-frontend:1.0
+
+Open http://localhost:8080. Nginx routes /api/ requests to bharatgo-backend:8080 over the Docker network.
+
+STEP 6 — VERIFY FRONTEND, BACKEND AND DATABASE
+----------------------------------------------
+  docker ps
+  docker logs bharatgo-frontend
+  docker logs bharatgo-backend
+  docker logs bharatgo-db
+  curl http://localhost:8080/api/health
+  curl http://localhost:8080/api/ready
+  curl http://localhost:8080/api/trips
+
+Expected health response resembles:
+  {"status":"ok","service":"bharatgo-api","java":"21"}
+
+Expected readiness response when DB is connected:
+  {"status":"ready","database":"connected"}
+
+If curl is not installed, open those URLs in a browser except the POST/PUT/DELETE tests. Use PowerShell Invoke-RestMethod if needed.
+
+STEP 7 — TEST CRUD
+------------------
+Create a trip (Linux/macOS/Git Bash):
+  curl -X POST http://localhost:8080/api/trips \
+    -H 'Content-Type: application/json' \
+    -d '{"destination":"Mumbai, Maharashtra","travelers":2,"budget":8500,"notes":"Weekend city trip"}'
+
+List trips:
+  curl http://localhost:8080/api/trips
+
+Use the returned ID in the following update/delete commands (replace 1 with your ID):
+  curl -X PUT http://localhost:8080/api/trips/1 \
+    -H 'Content-Type: application/json' \
+    -d '{"destination":"Mumbai and Pune","travelers":3,"budget":12000,"notes":"Updated plan"}'
+  curl -i -X DELETE http://localhost:8080/api/trips/1
+
+You can also create, edit and delete trips in the web UI. Invalid destination, date, budget or traveller values should return a validation error.
+
+STEP 8 — INSPECT DOCKER RESOURCES
+---------------------------------
+  docker ps
+  docker ps -a
+  docker images
+  docker network inspect bharatgo-net
+  docker volume inspect bharatgo-mysql-data
+  docker stats
+  docker inspect bharatgo-backend
+
+STEP 9 — TEST DATABASE PERSISTENCE
+---------------------------------
+1. Create a trip in the app and note its destination.
+2. Remove only the database container:
+     docker stop bharatgo-db
+     docker rm bharatgo-db
+3. Repeat the MySQL docker run command from Step 3 using the same volume name and same credentials.
+4. Wait for MySQL health, then restart backend:
+     docker restart bharatgo-backend
+5. Refresh the app or run GET /api/trips. The saved trip should remain.
+
+Never delete bharatgo-mysql-data if you need to preserve trips. The database initialization scripts only run on an empty volume.
+
+REBUILD AFTER A CODE CHANGE
+---------------------------
+  docker build -t bharatgo-backend:1.1 ./backend
+  docker build -t bharatgo-frontend:1.1 ./frontend
+
+For frontend update:
+  docker rm -f bharatgo-frontend
+  docker run -d --name bharatgo-frontend --network bharatgo-net -p 8080:80 --restart unless-stopped bharatgo-frontend:1.1
+
+For backend update, remove and recreate bharatgo-backend with the same network and DB environment variables, but use bharatgo-backend:1.1. Keep version tags so you can roll back to 1.0 if needed.
+
+TROUBLESHOOTING
+---------------
+Problem: docker command cannot connect to daemon
+Reason: Docker Desktop/Engine is stopped
+Fix: Start Docker and rerun docker info.
+
+Problem: Frontend loads but API fails
+Reason: backend container is stopped, wrong network, or DB is not ready
+Diagnosis: docker ps -a; docker logs bharatgo-backend; docker logs bharatgo-db; docker network inspect bharatgo-net
+Fix: Start MySQL first, wait until healthy, then restart backend: docker restart bharatgo-backend.
+
+Problem: Backend cannot connect to MySQL
+Reason: DB_HOST/name, network, username/password mismatch, or MySQL initialization still running
+Fix: Confirm DB_HOST=bharatgo-db; both containers must be on bharatgo-net; match credentials used when MySQL was first initialized.
+
+Problem: SQL initialization does not update schema
+Reason: MySQL only runs /docker-entrypoint-initdb.d scripts for an empty data directory
+Fix: use a versioned migration for real updates. Do not delete the volume unless intentionally resetting all data.
+
+Problem: Host port 8080 already in use
+Fix: publish another host port, for example -p 8081:80, then open http://localhost:8081.
+
+Problem: Container name already exists
+Fix: docker rm -f bharatgo-frontend (or the specific container) before recreating it.
+
+STOP AND CLEAN UP
+-----------------
+Stop/remove containers:
+  docker rm -f bharatgo-frontend bharatgo-backend bharatgo-db
+Remove the network:
+  docker network rm bharatgo-net
+
+The named volume is preserved by these commands. To delete all stored trip data, separately run this only if you intentionally want a full reset:
+  docker volume rm bharatgo-mysql-data
+
+IMPORTANT SECURITY NOTES
+------------------------
+The credentials in this guide are examples for a local classroom exercise. Replace them before use outside the local machine. Environment variables may be visible to Docker administrators and can be stored in shell history; production deployments should use Docker secrets or a managed secret store. MySQL port 3306 is deliberately not published. This guide has not been executed on your own machine; verify each expected result locally.

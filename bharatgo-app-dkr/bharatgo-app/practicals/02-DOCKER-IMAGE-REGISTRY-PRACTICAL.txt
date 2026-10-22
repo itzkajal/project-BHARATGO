@@ -1,0 +1,116 @@
+BHARATGO — DOCKER IMAGE REGISTRY PRACTICAL (NO COMPOSE)
+=======================================================
+
+OBJECTIVE
+---------
+Build BHARATGO application images, tag and push them to Docker Hub, optionally push to AWS ECR, pull them on another machine, and run containers using docker run. No Docker Compose commands are used.
+
+PREREQUISITES
+-------------
+- Docker installed and running
+- BHARATGO project source
+- Docker Hub account for Docker Hub steps
+- AWS CLI configured and permission to push/pull ECR images for optional ECR steps
+
+PART 1 — BUILD IMAGES
+---------------------
+From the project root:
+  docker build -t bharatgo-backend:1.0 ./backend
+  docker build -t bharatgo-frontend:1.0 ./frontend
+  docker pull mysql:8.4
+  docker images
+
+MySQL uses the official mysql:8.4 image. The database data volume is not part of the image; it belongs to the running database container's persistent volume.
+
+PART 2 — TAG FOR DOCKER HUB
+---------------------------
+Replace DOCKERHUB_USERNAME with your own Docker Hub username before running commands:
+  docker tag bharatgo-backend:1.0 DOCKERHUB_USERNAME/bharatgo-backend:1.0
+  docker tag bharatgo-frontend:1.0 DOCKERHUB_USERNAME/bharatgo-frontend:1.0
+  docker login
+  docker push DOCKERHUB_USERNAME/bharatgo-backend:1.0
+  docker push DOCKERHUB_USERNAME/bharatgo-frontend:1.0
+
+Expected: push output ends with a digest and image tag. Never put credentials in Dockerfiles or image layers.
+
+PART 3 — OPTIONAL AWS ECR
+-------------------------
+Set your actual values first:
+  AWS_REGION=ap-south-1
+  AWS_ACCOUNT_ID=123456789012
+
+Create repositories (one-time):
+  aws ecr create-repository --repository-name bharatgo-backend --region ap-south-1
+  aws ecr create-repository --repository-name bharatgo-frontend --region ap-south-1
+
+Authenticate Docker (Linux/macOS/Git Bash):
+  aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 123456789012.dkr.ecr.ap-south-1.amazonaws.com
+
+Tag and push:
+  docker tag bharatgo-backend:1.0 123456789012.dkr.ecr.ap-south-1.amazonaws.com/bharatgo-backend:1.0
+  docker tag bharatgo-frontend:1.0 123456789012.dkr.ecr.ap-south-1.amazonaws.com/bharatgo-frontend:1.0
+  docker push 123456789012.dkr.ecr.ap-south-1.amazonaws.com/bharatgo-backend:1.0
+  docker push 123456789012.dkr.ecr.ap-south-1.amazonaws.com/bharatgo-frontend:1.0
+
+Replace the sample region/account ID with values from your own AWS account. IAM permissions are required. Do not run the sample account ID as-is.
+
+PART 4 — PULL IMAGES ON ANOTHER MACHINE
+---------------------------------------
+Docker Hub:
+  docker pull DOCKERHUB_USERNAME/bharatgo-backend:1.0
+  docker pull DOCKERHUB_USERNAME/bharatgo-frontend:1.0
+  docker pull mysql:8.4
+
+ECR users should authenticate to ECR on the destination machine and then pull the corresponding ECR image tags.
+
+PART 5 — DEPLOY WITHOUT BUILDING ON DESTINATION MACHINE
+-------------------------------------------------------
+The destination machine needs the database initialization SQL files and Docker network/volume. Pulling application images does not transfer database data.
+
+1. Create network and volume:
+  docker network create bharatgo-net
+  docker volume create bharatgo-mysql-data
+
+2. Start MySQL with the Step 3 command in `practicals/01-DOCKER-DEPLOYMENT-PRACTICAL.txt`. Ensure the database SQL files are present on that machine. Use the same secure credentials in the MySQL and backend commands.
+
+3. Start backend using the pulled image instead of local image:
+  docker run -d --name bharatgo-backend --network bharatgo-net --restart unless-stopped -e SERVER_PORT=8080 -e DB_HOST=bharatgo-db -e DB_PORT=3306 -e DB_NAME=travel_planner -e DB_USER=travel_app -e DB_PASSWORD='REPLACE_WITH_YOUR_DB_PASSWORD' DOCKERHUB_USERNAME/bharatgo-backend:1.0
+
+4. Start frontend:
+  docker run -d --name bharatgo-frontend --network bharatgo-net -p 8080:80 --restart unless-stopped DOCKERHUB_USERNAME/bharatgo-frontend:1.0
+
+5. Verify:
+  docker ps
+  docker logs bharatgo-backend
+  curl http://localhost:8080/api/ready
+  curl http://localhost:8080/api/trips
+
+Replace DOCKERHUB_USERNAME and REPLACE_WITH_YOUR_DB_PASSWORD before running. For PowerShell, paste each docker run command as a single line. Never use the placeholder password literally.
+
+PART 6 — IMAGE VERSIONING AND ROLLBACK
+--------------------------------------
+Use immutable version tags for each release, such as 1.0, 1.1 and 1.2. Avoid relying only on latest.
+
+Example:
+  docker build -t bharatgo-frontend:1.1 ./frontend
+  docker tag bharatgo-frontend:1.1 DOCKERHUB_USERNAME/bharatgo-frontend:1.1
+  docker push DOCKERHUB_USERNAME/bharatgo-frontend:1.1
+
+To roll back, recreate the frontend container using the previous image tag:
+  docker rm -f bharatgo-frontend
+  docker run -d --name bharatgo-frontend --network bharatgo-net -p 8080:80 --restart unless-stopped DOCKERHUB_USERNAME/bharatgo-frontend:1.0
+
+Repeat the same process for the backend if required. Database schema changes need their own migration and rollback plan; changing an application image does not roll back database data.
+
+TROUBLESHOOTING
+---------------
+- `unauthorized`: run docker login and verify image namespace/tag.
+- `manifest unknown`: check that the tag was pushed and spelled correctly.
+- ECR login errors: verify AWS identity, region, repository URI and IAM permissions.
+- API not ready: check docker logs bharatgo-backend and docker logs bharatgo-db; verify both are on bharatgo-net and credentials match.
+- Container name conflict: docker rm -f <container-name> before recreating it.
+- Data missing on new host: Docker images do not contain database data. Back up/restore the MySQL database or migrate the persistent volume separately.
+
+SECURITY
+--------
+Do not push passwords, .env files, secret files, database backups, or real user data into image layers or public repositories. Use a secure secret store for production. Never expose MySQL port 3306 publicly unless there is a reviewed requirement.
